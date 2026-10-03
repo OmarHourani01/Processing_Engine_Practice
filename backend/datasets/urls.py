@@ -1,0 +1,45 @@
+from django.urls import path
+
+from .views import (
+    CancelUploadSessionView,
+    CSRFView,
+    DatasetDetailView,
+    DatasetImagesView,
+    DatasetListCreateView,
+    DatasetMapView,
+    HealthView,
+    ImageDetailView,
+    JobDetailView,
+    JobListCreateView,
+    LoginView,
+    LogoutView,
+    MeView,
+    ProcessDatasetView,
+    RetryFailedBatchView,
+    RegisterView,
+    UploadConfirmView,
+    UploadPrepareView,
+)
+from .scaling import LocalScalingView
+
+urlpatterns = [
+    path("health/", HealthView.as_view(), name="health"),
+    path("auth/csrf/", CSRFView.as_view(), name="csrf"),
+    path("auth/register/", RegisterView.as_view(), name="register"),
+    path("auth/login/", LoginView.as_view(), name="login"),
+    path("auth/logout/", LogoutView.as_view(), name="logout"),
+    path("auth/me/", MeView.as_view(), name="me"),
+    path("local/scaling/", LocalScalingView.as_view(), name="local-scaling"),
+    path("datasets/", DatasetListCreateView.as_view(), name="dataset-list"),
+    path("datasets/<uuid:dataset_id>/", DatasetDetailView.as_view(), name="dataset-detail"),
+    path("datasets/<uuid:dataset_id>/uploads/prepare/", UploadPrepareView.as_view(), name="upload-prepare"),
+    path("datasets/<uuid:dataset_id>/uploads/confirm/", UploadConfirmView.as_view(), name="upload-confirm"),
+    path("datasets/<uuid:dataset_id>/process/", ProcessDatasetView.as_view(), name="dataset-process"),
+    path("datasets/<uuid:dataset_id>/images/", DatasetImagesView.as_view(), name="dataset-images"),
+    path("datasets/<uuid:dataset_id>/map/", DatasetMapView.as_view(), name="dataset-map"),
+    path("images/<uuid:image_id>/", ImageDetailView.as_view(), name="image-detail"),
+    path("jobs/", JobListCreateView.as_view(), name="job-list-create"),
+    path("jobs/<uuid:job_id>/cancel/", CancelUploadSessionView.as_view(), name="job-cancel"),
+    path("jobs/<uuid:job_id>/retry-failed/", RetryFailedBatchView.as_view(), name="job-retry-failed"),
+    path("jobs/<uuid:job_id>/", JobDetailView.as_view(), name="job-detail"),
+]

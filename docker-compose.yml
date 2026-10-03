@@ -1,0 +1,249 @@
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_DB: images
+      POSTGRES_USER: images
+      POSTGRES_PASSWORD: local-images-password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U images -d images"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: alpine/minio:RELEASE.2025-10-15T17-29-55Z@sha256:cf23643a6cf9ce159c57643ceb88279e431262282428c9e0bf3a7ef1a97e84b4
+    user: "0:0"
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-local-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-local-minio-password}
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - minio_data:/data
+
+  minio-init:
+    build:
+      context: ./backend
+      target: runtime
+    depends_on:
+      minio:
+        condition: service_started
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-local-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-local-minio-password}
+      MINIO_ENDPOINT_URL: http://minio:9000
+      MINIO_PUBLIC_ENDPOINT_URL: http://localhost:9000
+      MINIO_BUCKET: image-datasets
+      MINIO_SECURE: "0"
+      FRONTEND_ORIGIN: http://localhost:5173
+    command: python manage.py setup_storage
+    restart: "no"
+
+  backend:
+    build:
+      context: ./backend
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+      gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 2 --timeout 120"
+    environment:
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-local-only-change-me}
+      DJANGO_DEBUG: ${DJANGO_DEBUG:-1}
+      DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1,backend
+      POSTGRES_DB: images
+      POSTGRES_USER: images
+      POSTGRES_PASSWORD: local-images-password
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      CELERY_BROKER_URL: redis://redis:6379/0
+      MINIO_ENDPOINT_URL: http://minio:9000
+      MINIO_PUBLIC_ENDPOINT_URL: http://localhost:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-local-minio}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-local-minio-password}
+      MINIO_BUCKET: image-datasets
+      MINIO_SECURE: "0"
+      UPLOAD_MAX_FILES: ${UPLOAD_MAX_FILES:-1000}
+      UPLOAD_MAX_BYTES: ${UPLOAD_MAX_BYTES:-10737418240}
+      UPLOAD_URL_TTL_SECONDS: ${UPLOAD_URL_TTL_SECONDS:-43200}
+      LOCAL_SCALING_ENABLED: ${LOCAL_SCALING_ENABLED:-0}
+      LOCAL_SCALING_SLOT_BUDGET: ${LOCAL_SCALING_SLOT_BUDGET:-8}
+      FRONTEND_ORIGIN: http://localhost:5173
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/').read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+
+  worker-ingest:
+    build:
+      context: ./backend
+    command: celery -A config worker --loglevel=INFO --queues=ingest --autoscale=2,1 --hostname=ingest@%h
+    stop_grace_period: 5m
+    restart: unless-stopped
+    environment:
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-local-only-change-me}
+      DJANGO_DEBUG: ${DJANGO_DEBUG:-1}
+      POSTGRES_DB: images
+      POSTGRES_USER: images
+      POSTGRES_PASSWORD: local-images-password
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      CELERY_BROKER_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ENDPOINT_URL: http://minio:9000
+      MINIO_PUBLIC_ENDPOINT_URL: http://localhost:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-local-minio}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-local-minio-password}
+      MINIO_BUCKET: image-datasets
+      MINIO_SECURE: "0"
+      UPLOAD_MAX_FILES: ${UPLOAD_MAX_FILES:-1000}
+      UPLOAD_MAX_BYTES: ${UPLOAD_MAX_BYTES:-10737418240}
+      UPLOAD_URL_TTL_SECONDS: ${UPLOAD_URL_TTL_SECONDS:-43200}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      backend:
+        condition: service_healthy
+
+  worker-images:
+    build:
+      context: ./backend
+    command: celery -A config worker --loglevel=INFO --queues=images --autoscale=2,1 --hostname=images@%h
+    stop_grace_period: 5m
+    restart: unless-stopped
+    environment:
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-local-only-change-me}
+      DJANGO_DEBUG: ${DJANGO_DEBUG:-1}
+      POSTGRES_DB: images
+      POSTGRES_USER: images
+      POSTGRES_PASSWORD: local-images-password
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      CELERY_BROKER_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ENDPOINT_URL: http://minio:9000
+      MINIO_PUBLIC_ENDPOINT_URL: http://localhost:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-local-minio}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-local-minio-password}
+      MINIO_BUCKET: image-datasets
+      MINIO_SECURE: "0"
+      UPLOAD_MAX_FILES: ${UPLOAD_MAX_FILES:-1000}
+      UPLOAD_MAX_BYTES: ${UPLOAD_MAX_BYTES:-10737418240}
+      UPLOAD_URL_TTL_SECONDS: ${UPLOAD_URL_TTL_SECONDS:-43200}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+
+  worker-beat:
+    build:
+      context: ./backend
+    command: celery -A config beat --loglevel=INFO
+    environment:
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-local-only-change-me}
+      DJANGO_DEBUG: ${DJANGO_DEBUG:-1}
+      POSTGRES_DB: images
+      POSTGRES_USER: images
+      POSTGRES_PASSWORD: local-images-password
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      CELERY_BROKER_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ENDPOINT_URL: http://minio:9000
+      MINIO_PUBLIC_ENDPOINT_URL: http://localhost:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-local-minio}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-local-minio-password}
+      MINIO_BUCKET: image-datasets
+      MINIO_SECURE: "0"
+      UPLOAD_MAX_FILES: ${UPLOAD_MAX_FILES:-1000}
+      UPLOAD_MAX_BYTES: ${UPLOAD_MAX_BYTES:-10737418240}
+      UPLOAD_URL_TTL_SECONDS: ${UPLOAD_URL_TTL_SECONDS:-43200}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+    environment:
+      MAPBOX_ACCESS_TOKEN: ${MAPBOX_ACCESS_TOKEN:-}
+    ports:
+      - "127.0.0.1:5173:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  frontend-test:
+    profiles: ["test"]
+    build:
+      context: ./frontend
+      target: build
+    command: npm test
+
+  backend-test:
+    profiles: ["test"]
+    build:
+      context: ./backend
+      target: test
+    environment:
+      DJANGO_SECRET_KEY: local-test-secret
+      DJANGO_DEBUG: "1"
+      DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1,backend
+      POSTGRES_DB: images
+      POSTGRES_USER: images
+      POSTGRES_PASSWORD: local-images-password
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      CELERY_BROKER_URL: redis://redis:6379/0
+      MINIO_ENDPOINT_URL: http://minio:9000
+      MINIO_PUBLIC_ENDPOINT_URL: http://localhost:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-local-minio}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-local-minio-password}
+      MINIO_BUCKET: image-datasets
+      MINIO_SECURE: "0"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
