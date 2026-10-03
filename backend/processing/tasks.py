@@ -230,6 +230,9 @@ def _refresh_parent(parent_id):
     parent = Job.objects.select_for_update().filter(pk=parent_id).first()
     if not parent or parent.kind != Job.Kind.INGEST_DATASET or parent.status == Job.Status.CANCELLED:
         return
+    if "images_created" not in (parent.result_data or {}):
+        # The ingest task has not committed its image set yet.
+        return
     child_jobs = Job.objects.filter(parent_id=parent_id, image_id__isnull=False)
     terminal = {Job.Status.SUCCEEDED, Job.Status.SUCCEEDED_WITH_ERRORS, Job.Status.FAILED, Job.Status.CANCELLED}
     completed_count = 0
@@ -245,9 +248,9 @@ def _refresh_parent(parent_id):
         .values("image_id")
         .distinct()
         .annotate(metadata_status=Subquery(latest_metadata), preview_status=Subquery(latest_preview))
-        .values_list("metadata_status", "preview_status")
+        .values_list("image_id", "metadata_status", "preview_status")
     )
-    for metadata_status, preview_status in image_states:
+    for _image_id, metadata_status, preview_status in image_states:
         states = {
             Job.Kind.EXTRACT_METADATA: metadata_status,
             Job.Kind.GENERATE_THUMBNAIL: preview_status,
@@ -324,6 +327,7 @@ def _finish_ingest(job_id, images_created, errors):
         parent.save(update_fields=[
             "status", "total_count", "completed_count", "failed_count", "errors", "result_data", "finished_at", "updated_at"
         ])
+        _refresh_parent(parent.pk)
         return True
 
 
@@ -723,6 +727,23 @@ def reconcile_jobs(self, batch_size=200):
                 job.errors = _append_error(job.errors, "recovery", "Requeued after worker interruption", retryable=True)
             job.save(update_fields=["status", "errors", "updated_at"])
             dispatch.append((job.pk, job.kind))
+
+        # Older versions could leave a parent session running after all of
+        # its image tasks reached terminal states. Recompute those counters
+        # periodically so existing sessions recover without new task events.
+        parent_ids = list(
+            Job.objects.select_for_update(skip_locked=True, of=("self",))
+            .filter(
+                kind=Job.Kind.INGEST_DATASET,
+                status=Job.Status.RUNNING,
+                result_data__has_key="images_created",
+                updated_at__lt=queued_before,
+            )
+            .order_by("updated_at")
+            .values_list("pk", flat=True)[:batch_size]
+        )
+        for parent_id in parent_ids:
+            _refresh_parent(parent_id)
     sent = 0
     for job_id, kind in dispatch:
         try:

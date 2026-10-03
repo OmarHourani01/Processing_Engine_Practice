@@ -86,6 +86,38 @@ class LocalScalingApiTests(TestCase):
         total_slots = policy.ingest_max_processes * policy.ingest_max_replicas + policy.images_max_processes * policy.images_max_replicas
         self.assertLessEqual(total_slots, 6)
 
+    @override_settings(LOCAL_SCALING_SLOT_BUDGET=32)
+    def test_existing_untouched_default_policy_expands_to_a_32_slot_budget(self):
+        LocalScalingPolicy.objects.create(
+            pk=1,
+            ingest_max_processes=2,
+            ingest_max_replicas=2,
+            images_max_processes=2,
+            images_max_replicas=2,
+        )
+
+        policy = LocalScalingPolicy.get_solo()
+
+        self.assertEqual(policy.ingest_max_processes * policy.ingest_max_replicas, 16)
+        self.assertEqual(policy.images_max_processes * policy.images_max_replicas, 16)
+        self.assertEqual(policy.as_dict()["slot_budget"], 32)
+
+    @override_settings(LOCAL_SCALING_ENABLED=True, LOCAL_SCALING_SLOT_BUDGET=32)
+    def test_saved_custom_limits_are_not_replaced_by_automatic_defaults(self):
+        LocalScalingPolicy.objects.create(
+            pk=1,
+            uses_automatic_defaults=False,
+            ingest_max_processes=2,
+            ingest_max_replicas=2,
+            images_max_processes=2,
+            images_max_replicas=2,
+        )
+
+        response = self.client.get("/api/local/scaling/")
+
+        self.assertEqual(response.data["policy"]["queues"]["ingest"]["max_processes"], 2)
+        self.assertEqual(response.data["policy"]["queues"]["ingest"]["max_replicas"], 2)
+
 
 class LocalScalingCommandTests(TestCase):
     def test_recognizes_celery_autoscale_acknowledgement(self):

@@ -87,6 +87,7 @@ class LocalScalingView(APIView):
         policy_data = serializer.validated_data
         fields = {
             "replica_autoscaling_enabled": policy_data["replica_autoscaling_enabled"],
+            "uses_automatic_defaults": False,
             "ingest_min_processes": policy_data["queues"]["ingest"]["min_processes"],
             "ingest_max_processes": policy_data["queues"]["ingest"]["max_processes"],
             "ingest_min_replicas": policy_data["queues"]["ingest"]["min_replicas"],

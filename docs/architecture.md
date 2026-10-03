@@ -44,7 +44,7 @@ Session cancellation locks the parent before its children, marks active rows can
 
 ## Local worker scaling
 
-`python3 scripts/local_autoscale.py` enables the scaling API, starts Compose, and checks both queues every 15 seconds. The launcher adds one container after 30 seconds of sustained queued work. It removes one after at least 60 seconds of idle work and a 120-second cooldown. Scale-down requires empty broker, active, reserved, and scheduled work; failed inspection pauses changes. Celery adjusts process counts within each container, and the launcher applies saved process limits through Celery remote control.
+`python3 scripts/local_autoscale.py` enables the scaling API, starts Compose, and checks both queues every 15 seconds. An untouched default policy fills the configured task-slot budget, up to four containers and four processes per queue. The launcher adds one container after 30 seconds of sustained broker backlog or worker saturation, including tasks held in Celery's reserved prefetch buffer. It removes one after at least 60 seconds of idle work and a 120-second cooldown. Scale-down requires empty broker, active, reserved, and scheduled work; failed inspection pauses changes. Celery adjusts process counts within each container, and the launcher applies saved process limits through Celery remote control.
 
 Any signed-in user can update the machine-wide policy. Each queue permits one to four processes and one to four containers. The combined configured maximum must fit `LOCAL_SCALING_SLOT_BUDGET` (default eight slots). The switch on the Worker scaling page pauses container replica changes. The controller heartbeat is shown as offline when it is more than 45 seconds old.
 

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { GeoJSONSource, Map as MapboxMap } from 'mapbox-gl/esm';
+import type { GeoJSONSource, Map as MapboxMap } from 'mapbox-gl';
 import type { FeatureCollection, Id } from '../types';
 
 const token = window.__APP_CONFIG__?.mapboxAccessToken || import.meta.env.VITE_MAPBOX_ACCESS_TOKEN || '';
@@ -22,11 +22,11 @@ export function DatasetMap({ datasetId, data, onSelectId }: { datasetId: Id; dat
     let instance: MapboxMap | null = null;
     if (!token || !container.current) return;
     void Promise.all([
-      import('mapbox-gl/esm'),
+      import('mapbox-gl'),
       import('mapbox-gl/dist/mapbox-gl.css'),
-    ]).then(([mapbox]) => {
+    ]).then(([{ default: mapbox }]) => {
       if (cancelled || !container.current) return;
-      mapbox.setAccessToken(token);
+      mapbox.accessToken = token;
       const mapInstance = new mapbox.Map({
         container: container.current,
         style: 'mapbox://styles/mapbox/streets-v12',

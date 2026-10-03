@@ -150,6 +150,7 @@ class LocalScalingPolicy(models.Model):
 
     id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
     replica_autoscaling_enabled = models.BooleanField(default=True)
+    uses_automatic_defaults = models.BooleanField(default=True)
     ingest_min_processes = models.PositiveSmallIntegerField(default=1)
     ingest_max_processes = models.PositiveSmallIntegerField(default=2)
     ingest_min_replicas = models.PositiveSmallIntegerField(default=1)
@@ -162,13 +163,30 @@ class LocalScalingPolicy(models.Model):
 
     @classmethod
     def get_solo(cls):
+        queue_slots = max(1, settings.LOCAL_SCALING_SLOT_BUDGET // 2)
+        options = [
+            (processes, replicas)
+            for processes in range(1, 5)
+            for replicas in range(1, 5)
+            if processes * replicas <= queue_slots
+        ]
+        max_processes, max_replicas = max(
+            options,
+            key=lambda limits: (limits[0] * limits[1], -abs(limits[0] - limits[1]), limits[1]),
+        )
         defaults = {
-            "ingest_max_processes": 2,
-            "ingest_max_replicas": 2 if settings.LOCAL_SCALING_SLOT_BUDGET >= 8 else 1,
-            "images_max_processes": 2,
-            "images_max_replicas": 2 if settings.LOCAL_SCALING_SLOT_BUDGET >= 8 else 1,
+            "ingest_max_processes": max_processes,
+            "ingest_max_replicas": max_replicas,
+            "images_max_processes": max_processes,
+            "images_max_replicas": max_replicas,
         }
         policy, _ = cls.objects.get_or_create(pk=1, defaults=defaults)
+        if policy.uses_automatic_defaults and any(
+            getattr(policy, name) != value for name, value in defaults.items()
+        ):
+            for name, value in defaults.items():
+                setattr(policy, name, value)
+            policy.save(update_fields=[*defaults, "updated_at"])
         return policy
 
     def as_dict(self):

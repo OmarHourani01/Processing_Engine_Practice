@@ -29,6 +29,17 @@ class LocalReplicaPolicyTests(unittest.TestCase):
         self.assertEqual(self.decide(current=2, queued=5, now=60), 3)
         self.assertEqual(self.decide(current=3, queued=5, now=90), 3)
 
+    def test_saturated_workers_scale_up_when_prefetch_hides_broker_queue(self):
+        self.assertEqual(self.decide(queued=0, demand=True, busy=True, now=0), 1)
+        self.assertEqual(self.decide(queued=0, demand=True, busy=True, now=29), 1)
+        self.assertEqual(self.decide(queued=0, demand=True, busy=True, now=30), 2)
+
+    def test_saturation_demand_must_persist_before_scaling(self):
+        self.assertEqual(self.decide(demand=True, now=0), 1)
+        self.assertEqual(self.decide(demand=False, now=20), 1)
+        self.assertEqual(self.decide(demand=True, now=29), 1)
+        self.assertEqual(self.decide(demand=True, now=59), 2)
+
     def test_backlog_must_persist_and_queues_have_independent_timers(self):
         ingest = QueueTimers()
         images = QueueTimers()

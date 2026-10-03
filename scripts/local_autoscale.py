@@ -148,6 +148,10 @@ def run_controller() -> None:
                             maximum=queue_policy["max_replicas"],
                             queued=metrics["queued"],
                             busy=busy,
+                            demand=(
+                                metrics["queued"] > 0
+                                or metrics["active"] + metrics["reserved"] + metrics["scheduled"] >= metrics["processes"]
+                            ),
                             now=tick_started,
                             timers=timers[queue],
                         )

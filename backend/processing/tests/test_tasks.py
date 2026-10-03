@@ -1,4 +1,5 @@
 from io import BytesIO
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -6,6 +7,7 @@ from django.contrib.auth import get_user_model
 from django.db import connection, transaction
 from django.test import SimpleTestCase, TestCase
 from django.test.utils import CaptureQueriesContext
+from django.utils import timezone
 
 from datasets.models import Dataset, Image, Job, StoredObjectDeletion, UploadAsset
 from processing.exceptions import InvalidImage, RetryableProcessingError
@@ -18,6 +20,7 @@ from processing.tasks import (
     _refresh_parent,
     _schedule_unreferenced_archive_objects,
     cleanup_stored_objects,
+    reconcile_jobs,
 )
 
 
@@ -136,6 +139,87 @@ class ParentProgressTests(TestCase):
         self.assertEqual(parent.failed_count, 1)
         self.assertEqual(parent.result_data["images_failed"], 1)
         self.assertEqual(dataset.status, Dataset.Status.COMPLETED)
+
+    def test_progress_counts_every_image_with_repeated_terminal_statuses(self):
+        user = get_user_model().objects.create_user(username="progress-group-user", password="strong-pass-123")
+        dataset = Dataset.objects.create(owner=user, name="Grouped progress", status=Dataset.Status.PROCESSING)
+        parent = Job.objects.create(
+            dataset=dataset,
+            kind=Job.Kind.INGEST_DATASET,
+            status=Job.Status.RUNNING,
+            total_count=4,
+            result_data={"images_created": 4, "ingest_failed_count": 0},
+        )
+        for index in range(4):
+            image = Image.objects.create(
+                dataset=dataset,
+                relative_path=f"image-{index}.jpg",
+                object_key=f"progress-group/{index}.jpg",
+                content_type="image/jpeg",
+                size=10,
+            )
+            failed = index == 3
+            Job.objects.create(
+                dataset=dataset,
+                image=image,
+                parent=parent,
+                kind=Job.Kind.EXTRACT_METADATA,
+                status=Job.Status.FAILED if failed else Job.Status.SUCCEEDED,
+            )
+            Job.objects.create(
+                dataset=dataset,
+                image=image,
+                parent=parent,
+                kind=Job.Kind.GENERATE_THUMBNAIL,
+                status=Job.Status.SUCCEEDED,
+            )
+
+        with transaction.atomic():
+            _refresh_parent(parent.pk)
+
+        parent.refresh_from_db()
+        self.assertEqual(parent.status, Job.Status.SUCCEEDED_WITH_ERRORS)
+        self.assertEqual(parent.total_count, 4)
+        self.assertEqual(parent.completed_count, 3)
+        self.assertEqual(parent.failed_count, 1)
+
+    def test_reconciler_repairs_older_running_parent_with_terminal_children(self):
+        user = get_user_model().objects.create_user(username="progress-reconcile-user", password="strong-pass-123")
+        dataset = Dataset.objects.create(owner=user, name="Stale progress", status=Dataset.Status.PROCESSING)
+        parent = Job.objects.create(
+            dataset=dataset,
+            kind=Job.Kind.INGEST_DATASET,
+            status=Job.Status.RUNNING,
+            total_count=4,
+            result_data={"images_created": 4, "ingest_failed_count": 0},
+        )
+        Job.objects.filter(pk=parent.pk).update(updated_at=timezone.now() - timedelta(minutes=3))
+        for index in range(4):
+            image = Image.objects.create(
+                dataset=dataset,
+                relative_path=f"stale-{index}.jpg",
+                object_key=f"stale-progress/{index}.jpg",
+                content_type="image/jpeg",
+                size=10,
+            )
+            failed = index == 3
+            Job.objects.create(
+                dataset=dataset, image=image, parent=parent,
+                kind=Job.Kind.EXTRACT_METADATA,
+                status=Job.Status.FAILED if failed else Job.Status.SUCCEEDED,
+            )
+            Job.objects.create(
+                dataset=dataset, image=image, parent=parent,
+                kind=Job.Kind.GENERATE_THUMBNAIL,
+                status=Job.Status.SUCCEEDED,
+            )
+
+        reconcile_jobs.run(batch_size=10)
+
+        parent.refresh_from_db()
+        self.assertEqual(parent.status, Job.Status.SUCCEEDED_WITH_ERRORS)
+        self.assertEqual(parent.completed_count, 3)
+        self.assertEqual(parent.failed_count, 1)
 
 
 class CancellationFenceTests(TestCase):

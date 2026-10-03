@@ -23,10 +23,12 @@ def next_replica_count(
     maximum: int,
     queued: int,
     busy: bool,
+    demand: bool | None = None,
     now: float,
     timers: QueueTimers,
 ) -> int:
     """Return a one-step desired replica count and update demand timers."""
+    demand = queued > 0 if demand is None else demand
     if not enabled:
         timers.backlog_since = None
         timers.idle_since = None
@@ -38,7 +40,7 @@ def next_replica_count(
         timers.last_scaled_at = now
         return minimum
 
-    if queued > 0:
+    if demand:
         timers.idle_since = None
         timers.backlog_since = now if timers.backlog_since is None else timers.backlog_since
         if current < maximum and now - timers.backlog_since >= SCALE_UP_AFTER_SECONDS:
