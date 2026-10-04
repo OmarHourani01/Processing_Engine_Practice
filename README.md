@@ -37,7 +37,32 @@ Named volumes retain the database, Redis, and uploaded objects. `docker compose 
 3. Browse images with EXIF GPS on the map and images without a location in the gallery. Open an image for metadata, previews, and a signed link to its original.
 4. Cancel an active upload session or delete an inactive session, image, or dataset in the app. Cancellation of a task already executing is best effort.
 
+## Job API
+
+The API uses authenticated sessions; browser writes require a CSRF token. After preparing, transferring, and confirming uploads, submit them for background processing:
+
+```http
+POST /api/datasets/{dataset_id}/process/
+```
+
+The API responds with `202 Accepted` and a job ID while workers process the uploads:
+
+```json
+{
+  "job": {
+    "id": "<job-uuid>",
+    "kind": "ingest_dataset",
+    "status": "queued"
+  }
+}
+```
+
+Poll `GET /api/jobs/{job_id}/` for the current status, progress counts, errors, and result. The `result` field contains operation-specific output when processing completes. `GET /api/jobs/` lists jobs and supports `status`, `type`, `dataset`, and `parent_job` filters, for example:
+
+```http
+GET /api/jobs/?type=generate_thumbnail&status=failed&dataset={dataset_id}
+```
+
+The `POST /api/jobs/` endpoint also accepts `extract_metadata` and `generate_thumbnail` jobs for an existing image, with `kind` and `image_id` in the JSON body. The [architecture document](docs/architecture.md) describes the components, processing flow, retry behavior, and job response fields.
+
 The default dataset quota is **1,000 uploaded items and 10 GiB of uploaded bytes**. A ZIP's expanded content is checked against those limits when its upload session is processed. Files larger than 5 GB use multipart transfer. Upload links expire after 12 hours by default; signed image links expire after 5 minutes.
-
-
-The [architecture document](docs/architecture.md) describes the current API, processing flow, storage, and local scaling behavior.

@@ -280,6 +280,32 @@ class DatasetUploadAndJobApiTests(TestCase):
         self.assertEqual(response.data["count"], 1)
         self.assertEqual(response.data["results"][0]["id"], str(own_job.pk))
 
+    def test_completed_job_detail_returns_status_and_result(self):
+        job = Job.objects.create(
+            dataset=self.dataset,
+            kind=Job.Kind.EXTRACT_METADATA,
+            status=Job.Status.SUCCEEDED,
+            total_count=1,
+            completed_count=1,
+            result_data={"width": 640, "height": 480, "camera_make": "Example"},
+        )
+
+        response = self.client.get(f"/api/jobs/{job.pk}/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["id"], str(job.pk))
+        self.assertEqual(response.data["status"], Job.Status.SUCCEEDED)
+        self.assertEqual(response.data["result"], job.result_data)
+
+    def test_job_detail_does_not_expose_another_users_job(self):
+        foreign = User.objects.create_user(username="job-owner", password="strong-pass-123")
+        other_dataset = Dataset.objects.create(owner=foreign, name="Private job data")
+        job = Job.objects.create(dataset=other_dataset, kind=Job.Kind.INGEST_DATASET)
+
+        response = self.client.get(f"/api/jobs/{job.pk}/")
+
+        self.assertEqual(response.status_code, 404)
+
     def test_image_list_can_filter_to_images_without_a_location_before_pagination(self):
         unlocated = Image.objects.create(
             dataset=self.dataset,

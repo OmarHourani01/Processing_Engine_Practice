@@ -19,6 +19,13 @@ def make_jpeg_with_exif():
     return output
 
 
+def make_png():
+    output = BytesIO()
+    PILImage.new("RGB", (48, 24), color=(20, 80, 140)).save(output, format="PNG")
+    output.seek(0)
+    return output
+
+
 class ImageProcessingTests(SimpleTestCase):
     def test_extracts_dimensions_camera_and_capture_time(self):
         metadata = inspect_image(make_jpeg_with_exif())
@@ -27,6 +34,12 @@ class ImageProcessingTests(SimpleTestCase):
         self.assertEqual(metadata["camera_make"], "Example Camera Co.")
         self.assertEqual(metadata["camera_model"], "Model 1")
         self.assertEqual(metadata["captured_at"].isoformat(), "2025-02-03T04:05:06+00:00")
+        self.assertIsNone(metadata["gps"])
+
+    def test_extracts_metadata_from_png(self):
+        metadata = inspect_image(make_png())
+
+        self.assertEqual((metadata["width"], metadata["height"]), (48, 24))
         self.assertIsNone(metadata["gps"])
 
     def test_generates_small_webp_thumbnail_and_preview(self):
@@ -40,4 +53,3 @@ class ImageProcessingTests(SimpleTestCase):
     def test_invalid_image_is_terminal(self):
         with self.assertRaises(InvalidImage):
             inspect_image(BytesIO(b"not an image"))
-

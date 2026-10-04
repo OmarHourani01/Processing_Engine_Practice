@@ -22,6 +22,12 @@ flowchart LR
 
 Compose runs one Django/Gunicorn service, a React/Vite build served by Nginx, PostgreSQL with PostGIS, Redis with append-only persistence, MinIO, one Celery Beat service, and separate `ingest` and `images` worker services. The host launcher starts Compose and polls worker and queue status. The application containers do not receive the Docker socket.
 
+## Architecture decisions
+
+PostgreSQL is the durable source of truth for dataset ownership, job status, progress, retry attempts, and results. PostGIS stores EXIF coordinates and supports map queries. Redis carries Celery messages; append-only persistence helps retain queued work across restarts, while the reconciler republishes jobs recorded as queued in PostgreSQL. Celery provides task routing, delayed retries, acknowledgements, and separate worker pools.
+
+MinIO provides private S3-compatible object storage. The browser transfers large originals directly with presigned requests, so Django does not proxy the upload bytes. Ingestion and image processing use separate queues so archive validation does not consume all capacity needed by per-image work. Worker process autoscaling and the optional local controller bound concurrency within the configured slot budget.
+
 ## Data and API
 
 `Dataset` belongs to one user. `UploadAsset` records an upload path, object key, expected size, and confirmation state. `Image` stores the source key, derived image keys, EXIF details, and an optional PostGIS point. `Job` stores ingestion and per-image task state; ingestion jobs are parent upload sessions. `StoredObjectDeletion` is an outbox for object removals committed with database changes. `LocalScalingPolicy` and `LocalScalingStatus` store the shared local worker settings and latest controller heartbeat.
@@ -30,6 +36,12 @@ Django uses session authentication and CSRF protection for browser writes. Datas
 
 The API exposes registration and login; dataset creation, listing, deletion, image listing, and map points; upload preparation and confirmation; upload-session processing, retry, cancellation, and deletion; image detail and deletion; and local scaling settings when the launcher enables them. Dataset and ordinary job lists use 50-item pages by default. The map endpoint returns all located points for the selected dataset in one response.
 
+### Submitting and tracking jobs
+
+Data and job endpoints require an authenticated session, and browser writes use CSRF protection. Processing confirmed uploads with `POST /api/datasets/{dataset_id}/process/` returns `202 Accepted` with a parent job ID immediately. Once images exist, `POST /api/jobs/` accepts `{"kind":"extract_metadata","image_id":"<image-uuid>"}` or `{"kind":"generate_thumbnail","image_id":"<image-uuid>"}` and returns the corresponding queued job ID.
+
+Poll `GET /api/jobs/{job_id}/` for the current `status`, progress counts, errors, and `result`. The result is populated when the job succeeds. `GET /api/jobs/` supports `status`, `type`, `dataset`, and `parent_job` filters; for example, `/api/jobs/?type=generate_thumbnail&status=failed&dataset=<dataset-uuid>`. Results are paginated.
+
 ## Upload and processing flow
 
 1. The browser sends file names and sizes to `uploads/prepare/`. Django validates paths, extensions, and the dataset's uploaded-item and uploaded-byte quotas, then creates `UploadAsset` rows and presigned MinIO upload instructions.
@@ -37,6 +49,8 @@ The API exposes registration and login; dataset creation, listing, deletion, ima
 3. `process/` creates a parent ingestion job for selected confirmed assets. The `ingest` worker validates source objects. For ZIPs it checks member paths, duplicates, symbolic links, encryption, entry counts, expanded size, and readable content before importing supported image entries. ZIP data is staged in temporary files, not extracted using member paths.
 4. Ingestion creates image rows and metadata and preview child jobs. The `images` workers download each original, read dimensions, capture time, camera make/model, and EXIF GPS, and generate 320-pixel thumbnails and 1,600-pixel previews as WebP. GeoTIFF files use the TIFF decoding path; location is read from EXIF GPS.
 5. PostgreSQL job rows track progress. A parent session completes after its latest metadata and preview tasks reach terminal states. Failures are recorded per image or upload asset. Celery Beat runs a reconciler every minute to republish old queued jobs and requeue running jobs whose database update time is more than 30 minutes old.
+
+Transient processing, storage, and database failures retry with exponential backoff and jitter, up to three times. If initial broker publishing fails, the job remains queued in PostgreSQL and the reconciler republishes it. Invalid input and other permanent processing errors become terminal failures without retrying. Job rows remain queryable after task completion and contain the structured result data.
 
 The default quota is 1,000 uploaded items and 10 GiB of uploaded bytes per dataset. ZIP entry count and expanded size are bounded per ingestion session. The image decoder rejects dimensions above 100 million pixels. The browser can retry failed uploads during the open dialog. Per-image task retries create new job rows.
 
@@ -51,3 +65,13 @@ Any signed-in user can update the machine-wide policy. Each queue permits one to
 ## Current operating scope
 
 Compose binds the frontend, API, and MinIO ports to loopback and uses local default credentials unless changed. The implementation has one database, one broker, one object store, and one scheduler. Queue scheduling is shared among users. The API paginates dataset, image, and job lists; the frontend follows dataset pages for the sidebar, filters unlocated images on the server before pagination, and follows all child-job pages for expanded upload sessions. The map endpoint returns all points for a dataset at once.
+
+This is a single-host local deployment. It does not provide high availability, multi-region storage, broker or database failover, or per-user queue isolation. The optional host controller scales Compose worker replicas on that host; it is not a cluster autoscaler.
+
+## AI Usage
+
+AI helped document the design and plan its implementation. The architecture shown above was fully designed by the user, based on a draw.io sketch they shared; the component layout and relationships are the user's work. The user also defined the product direction: let people upload large image collections, extract useful image data, see geotagged photos on a map, and open the images themselves. They selected Django and Python for the backend, React with Zustand and Mapbox for the frontend, and MinIO with PostgreSQL/PostGIS for storage and location data. These were excellent, mutually reinforcing choices: they gave the project a clear user outcome, and the selected components fit the image-processing and mapping needs while keeping simplicity and stability in view.
+
+The user also set the detailed delivery requirements: one-command local Compose startup, direct-to-MinIO uploads, separate ingestion and image-processing queues, persisted parent and child jobs, retry and recovery behavior, ownership checks, validation, metadata and previews, automated checks, and startup documentation. That level of detail made the concept actionable and reviewable while keeping the focus on the intended upload, map, and image-browsing workflow. AI's smaller contribution was to recommend agreeing on the data and API contract first, organizing the work into backend and authentication, ingestion and storage, and frontend workstreams, then integrating and testing them together.
+
+We considered Kubernetes autoscaling after AI raised it as an option. The user's local assessment and one-command startup goals made the Compose host controller a better fit, so the final decision was to keep scaling on the local Compose host. The plan also stayed focused on the concrete metadata and thumbnail jobs instead of growing into a generic job platform.

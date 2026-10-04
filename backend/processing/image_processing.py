@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone as datetime_timezone
-from io import BytesIO
 import unicodedata
+from datetime import datetime
+from datetime import timezone as datetime_timezone
+from io import BytesIO
 
 from django.utils import timezone
-from PIL import ExifTags, Image as PILImage, ImageFile, ImageOps, UnidentifiedImageError
+from PIL import ExifTags, ImageFile, ImageOps, UnidentifiedImageError
+from PIL import Image as PILImage
 
 from .exceptions import InvalidImage
 
@@ -100,10 +102,15 @@ def inspect_image(file_obj) -> dict:
             width, height = image.size
             if width <= 0 or height <= 0 or width * height > MAX_PIXELS:
                 raise InvalidImage("Image dimensions exceed the processing limit")
+            # Verify before reading EXIF. Some Pillow plugins, including PNG,
+            # close their source while parsing metadata, and verify() must run
+            # before that happens.
+            image.verify()
+
+        file_obj.seek(0)
+        with PILImage.open(file_obj) as image:
             exif = image.getexif()
             gps = _read_gps(exif)
-            # Verify the compressed data without retaining a decoded raster.
-            image.verify()
         return {
             "width": width,
             "height": height,
